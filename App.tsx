@@ -1,6 +1,6 @@
 
-import React, { useState, useCallback, useRef } from 'react';
-import { GoogleGenAI, Modality } from '@google/genai';
+import React, { useState, useCallback, useRef, useEffect } from 'react';
+import { GoogleGenAI, Modality, Type, FunctionDeclaration } from '@google/genai';
 import MathCanvas from './components/MathCanvas';
 import { SessionStatus, TranscriptionEntry } from './types';
 import { decode, decodeAudioData, createPcmBlob } from './services/audioUtils';
@@ -16,6 +16,29 @@ IMPORTANT RULES:
 4. Encourage the user and acknowledge their progress.
 5. Keep your spoken responses concise so the user can focus on writing.
 6. Observe the handwriting canvas closely to understand what the user is writing in real-time.`;
+
+const drawSquareDeclaration: FunctionDeclaration = {
+  name: 'draw_square',
+  description: 'Draws a red square on the screen to highlight a specific area. Use this to point out mistakes or focus attention.',
+  parameters: {
+    type: Type.OBJECT,
+    properties: {
+      x: {
+        type: Type.NUMBER,
+        description: 'The x-coordinate of the center of the square (0-1000, where 0 is left and 1000 is right).'
+      },
+      y: {
+        type: Type.NUMBER,
+        description: 'The y-coordinate of the center of the square (0-1000, where 0 is top and 1000 is bottom).'
+      },
+      size: {
+        type: Type.NUMBER,
+        description: 'The size/width of the square (0-1000, relative to screen width).'
+      }
+    },
+    required: ['x', 'y', 'size']
+  }
+};
 
 const App: React.FC = () => {
   const [status, setStatus] = useState<SessionStatus>(SessionStatus.IDLE);
@@ -58,6 +81,14 @@ const App: React.FC = () => {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const sessionRef = useRef<any>(null);
   const intervalRef = useRef<number | null>(null);
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
+
+  // Auto-scroll effect
+  useEffect(() => {
+    if (scrollContainerRef.current) {
+      scrollContainerRef.current.scrollTop = scrollContainerRef.current.scrollHeight;
+    }
+  }, [transcriptions, activeUserText, activeModelText]);
 
   const cleanup = useCallback(() => {
     if (intervalRef.current) window.clearInterval(intervalRef.current);
@@ -76,6 +107,31 @@ const App: React.FC = () => {
   const handleCanvasRef = useCallback((canvas: HTMLCanvasElement | null) => {
     canvasRef.current = canvas;
   }, []);
+
+  const drawHighlightSquare = (x: number, y: number, size: number) => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    const width = canvas.width;
+    const height = canvas.height;
+    
+    // Convert 0-1000 coords to pixels
+    const px = (x / 1000) * width;
+    const py = (y / 1000) * height;
+    const s = (size / 1000) * width;
+
+    ctx.save();
+    ctx.strokeStyle = '#ef4444'; // Red-500
+    ctx.lineWidth = 4;
+    ctx.lineCap = 'round';
+    ctx.shadowColor = 'rgba(239, 68, 68, 0.5)';
+    ctx.shadowBlur = 10;
+    ctx.beginPath();
+    ctx.strokeRect(px - s / 2, py - s / 2, s, s);
+    ctx.restore();
+  };
 
   const startTutoring = async () => {
     try {
@@ -134,6 +190,30 @@ const App: React.FC = () => {
             }, 1000);
           },
           onmessage: async (message) => {
+            // Handle Tool Calls (Annotations)
+            if (message.toolCall) {
+              const functionResponses = message.toolCall.functionCalls.map(fc => {
+                if (fc.name === 'draw_square') {
+                  const { x, y, size } = fc.args as any;
+                  drawHighlightSquare(x, y, size);
+                  return {
+                    id: fc.id,
+                    name: fc.name,
+                    response: { result: 'ok' }
+                  };
+                }
+                return {
+                  id: fc.id,
+                  name: fc.name,
+                  response: { result: 'error: tool not found' }
+                };
+              });
+              
+              if (functionResponses.length > 0) {
+                sessionPromise.then(session => session.sendToolResponse({ functionResponses }));
+              }
+            }
+
             // Audio Output handling
             const base64Audio = message.serverContent?.modelTurn?.parts?.[0]?.inlineData?.data;
             if (base64Audio) {
@@ -206,6 +286,7 @@ const App: React.FC = () => {
             voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Kore' } },
           },
           systemInstruction: finalInstruction,
+          tools: [{ functionDeclarations: [drawSquareDeclaration] }],
           inputAudioTranscription: {},
           outputAudioTranscription: {},
         }
@@ -342,7 +423,7 @@ Return as JSON with keys: "grade" (string) and "feedback" (string, markdown supp
             )}
           </div>
           
-          <div className="flex-1 overflow-y-auto p-4 space-y-4 bg-slate-50/30">
+          <div ref={scrollContainerRef} className="flex-1 overflow-y-auto p-4 space-y-4 bg-slate-50/30">
             {transcriptions.length === 0 && !activeUserText && !activeModelText && (
               <div className="h-full flex flex-col items-center justify-center text-center px-6 text-slate-400">
                 <svg xmlns="http://www.w3.org/2000/svg" className="h-10 w-10 mb-2 opacity-20" fill="none" viewBox="0 0 24 24" stroke="currentColor">
