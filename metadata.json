@@ -1,0 +1,8 @@
+{
+  "name": "Math Mentor Live",
+  "description": "A real-time math tutoring application using Gemini Live. Share your handwriting canvas and voice to get guided Socratic tutoring without being given the answers.",
+  "requestFramePermissions": [
+    "microphone",
+    "camera"
+  ]
+}
